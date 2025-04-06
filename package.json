@@ -3,11 +3,8 @@
   "type": "module",
   "packageManager": "yarn@4.5.3",
   "scripts": {
-    "initial_setup": "sh scripts/initial_setup.sh",
     "dev_build": "npx elm-cardano make src/Main.elm --output dist/elm.min.js",
-    "dev_serve": "npx serve dist/",
-    "prod_build": "sh scripts/prod_build.sh",
-    "deploy": "npx fleek sites deploy"
+    "dev_serve": "npx serve dist/"
   },
   "dependencies": {
     "elm": "^0.19.1-6"

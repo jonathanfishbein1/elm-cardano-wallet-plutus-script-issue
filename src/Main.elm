@@ -26,6 +26,11 @@ import Task
 import Toop
 
 
+network : Cardano.Address.NetworkId
+network =
+    Cardano.Address.Testnet
+
+
 referenceWalletAddressText =
     "addr_test1qp5vzne98n43jd9w335udqpkyua5yk7a8jrfslzdqc0pr8xqgwp4c5ekhct3tyygcf9lrxe6f9csdv757swftg0gvras28x5jz"
 
@@ -218,6 +223,7 @@ type Msg
     = WalletMsg Json.Decode.Value
     | ConnectButtonClicked { id : String }
     | GotProtocolParameters (Result Http.Error ProtocolParams)
+    | GotReferenceUtxos (Result Http.Error (List ReferenceScriptUtxo))
     | CloseMetadata
     | ReceiveCloseMetadata (Result Json.Decode.Error (Result Cardano.TxFinalizationError Cardano.TxFinalized))
 
@@ -229,6 +235,7 @@ type Effect
     | GetChangeAddress Cardano.Cip30.Wallet
     | GetRewardAddress Cardano.Cip30.Wallet
     | GetProtocalParameters
+    | GetReferenceUtxos
     | SubmitCloseMetadataTransaction Wallet Cardano.Address.Address
     | SubmitCloseMetadataScriptTransactionForSignature Cardano.Transaction.Transaction Wallet
     | SubmitCloseMetadataScriptForSubmission Cardano.Transaction.Transaction Wallet
@@ -467,6 +474,30 @@ convertSpendableUtxoIntoListOfUTxOReferenceOutputPairs address listOfMaestroResp
         listOfMaestroResponses
 
 
+getReferenceScriptUtxos : Cardano.Address.NetworkId -> (Result Http.Error (List ReferenceScriptUtxo) -> msg) -> Cmd msg
+getReferenceScriptUtxos networkId receivedRefereceWalletUtxosMsg =
+    Http.request
+        { method = "GET"
+        , headers =
+            [ apiKeyHeader networkId
+            ]
+        , url =
+            (dataUrl networkId ++ "addresses/")
+                ++ referenceWalletAddressText
+                ++ "/utxos"
+                ++ "?asset="
+                ++ referencePolicyIdHex
+                ++ referenceTokenAssetNameHex
+                ++ "&resolve_datums=true"
+        , body = Http.emptyBody
+        , expect =
+            Http.expectJson receivedRefereceWalletUtxosMsg
+                decodeReferenceScriptResponses
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
 perform effect =
     case effect of
         DiscoverWallets ->
@@ -491,6 +522,9 @@ perform effect =
             loadProtocolParameters
                 Cardano.Address.Testnet
                 GotProtocolParameters
+
+        GetReferenceUtxos ->
+            getReferenceScriptUtxos network GotReferenceUtxos
 
         SubmitCloseMetadataTransaction wallet metadataScriptAddress ->
             getSpendableUtxos network (Cardano.Address.toBech32 metadataScriptAddress)
@@ -623,10 +657,6 @@ init _ =
     )
 
 
-network =
-    Cardano.Address.Testnet
-
-
 referencePolicyIdHex : String
 referencePolicyIdHex =
     case network of
@@ -722,6 +752,25 @@ update msg model =
                 _ ->
                     ( model, NoEffect )
 
+        ( GotReferenceUtxos result, GettingReferenceUtxos previousWallet ) ->
+            case result of
+                Ok maestroResponses ->
+                    ( WaitingForInput
+                        { wallet = previousWallet.wallet
+                        , utxos = previousWallet.utxos
+                        , changeAddress = previousWallet.changeAddress
+                        , rewardAddresses = previousWallet.rewardAddresses
+                        , protocolParameters = previousWallet.protocolParameters
+                        , referenceUtxos =
+                            convertReferenceScriptResponseIntoListOfUTxOReferenceOutputPairs
+                                maestroResponses
+                        }
+                    , NoEffect
+                    )
+
+                Err err ->
+                    ( model, NoEffect )
+
         ( ConnectButtonClicked { id }, WalletDiscovered descriptors ) ->
             ( model, EnableWallet id )
 
@@ -741,6 +790,36 @@ update msg model =
                     ( model, SubmitCloseMetadataTransaction wallet metadataScriptAddress )
 
                 Err err ->
+                    ( model, NoEffect )
+
+        ( GotProtocolParameters result, GettingProtocalParameters previousWallet ) ->
+            case result of
+                Ok protocolParameters ->
+                    ( GettingReferenceUtxos
+                        { wallet = previousWallet.wallet
+                        , utxos = previousWallet.utxos
+                        , changeAddress = previousWallet.changeAddress
+                        , rewardAddresses = previousWallet.rewardAddresses
+                        , protocolParameters = protocolParameters
+                        }
+                    , GetReferenceUtxos
+                    )
+
+                Err err ->
+                    ( model, NoEffect )
+
+        ( ReceiveCloseMetadata x, WaitingForInput wallet ) ->
+            let
+                _ =
+                    Debug.log "in RecieveCloseMetadata " x
+            in
+            case x of
+                Ok (Ok validTx) ->
+                    ( ClosingMetadataScript validTx.tx wallet
+                    , SubmitCloseMetadataScriptTransactionForSignature validTx.tx wallet
+                    )
+
+                _ ->
                     ( model, NoEffect )
 
         _ ->
@@ -767,12 +846,12 @@ view model =
         WalletLoading _ ->
             Html.div [] [ Html.text "Loading wallet assets ..." ]
 
-        WalletLoaded { wallet, utxos, changeAddress } ->
+        WaitingForInput { wallet, utxos, changeAddress } ->
             Html.div []
                 [ Html.div [] [ Html.text <| "Wallet: " ++ (Cardano.Cip30.walletDescriptor wallet).name ]
                 , Html.div [] [ Html.text <| "Address: " ++ (Cardano.Address.toBytes changeAddress |> Bytes.Comparable.toHex) ]
                 , Html.div [] [ Html.text <| "UTxO count: " ++ String.fromInt (List.length utxos) ]
-                , Html.button [ Html.Events.onClick CloseMetadata ] [ Html.text "send script to wallet as reference script" ]
+                , Html.button [ Html.Events.onClick CloseMetadata ] [ Html.text "close utxo at script" ]
                 ]
 
         _ ->

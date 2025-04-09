@@ -18,6 +18,7 @@ import Html
 import Html.Attributes
 import Html.Events
 import Http
+import Integer
 import Json.Decode
 import Json.Decode.Pipeline
 import Json.Encode
@@ -80,6 +81,116 @@ metadataScriptResult mMSB =
 threeAda : Cardano.Value.Value
 threeAda =
     Cardano.Value.onlyLovelace (Natural.fromSafeString "3000000")
+
+
+credentialToData : Cardano.Address.Credential -> Cardano.Data.Data
+credentialToData credential =
+    case credential of
+        Cardano.Address.VKeyHash credentialHash ->
+            Cardano.Data.Constr Natural.zero
+                [ Cardano.Data.Bytes (Bytes.Comparable.toAny credentialHash)
+                ]
+
+        Cardano.Address.ScriptHash credentialBytes ->
+            Cardano.Data.Constr Natural.zero
+                [ Cardano.Data.Bytes (Bytes.Comparable.toAny credentialBytes)
+                ]
+
+
+stakeCredentialToData : Cardano.Address.StakeCredential -> Cardano.Data.Data
+stakeCredentialToData stakeCredential =
+    case stakeCredential of
+        Cardano.Address.InlineCredential credential ->
+            Cardano.Data.Constr Natural.zero
+                [ credentialToData credential
+                ]
+
+        Cardano.Address.PointerCredential _ ->
+            Cardano.Data.Constr Natural.one
+                []
+
+
+maybeStakeCredentialToData : Maybe Cardano.Address.StakeCredential -> Cardano.Data.Data
+maybeStakeCredentialToData maybeStakeCredential =
+    case maybeStakeCredential of
+        Just stakeCredential ->
+            Cardano.Data.Constr Natural.zero
+                [ stakeCredentialToData stakeCredential
+                ]
+
+        Nothing ->
+            Cardano.Data.Constr Natural.one []
+
+
+addressToData : Cardano.Address.Address -> Cardano.Data.Data
+addressToData address =
+    case address of
+        Cardano.Address.Shelley { networkId, paymentCredential, stakeCredential } ->
+            Cardano.Data.Constr Natural.zero
+                [ credentialToData paymentCredential
+                , maybeStakeCredentialToData stakeCredential
+                ]
+
+        _ ->
+            Cardano.Data.Int Integer.zero
+
+
+startMetadata wallet name description =
+    case metadataScriptResult metadataScriptString of
+        Ok metadataScript ->
+            let
+                metadataScriptHash =
+                    Cardano.Script.hash metadataScript
+
+                metadataScriptAddress : Cardano.Address.Address
+                metadataScriptAddress =
+                    Cardano.Address.script
+                        Cardano.Address.Testnet
+                        metadataScriptHash
+
+                metadataDatum =
+                    Cardano.Data.Constr Natural.zero
+                        [ Cardano.Data.Constr Natural.zero
+                            [ Cardano.Data.Bytes (Bytes.Comparable.toAny name)
+                            , Cardano.Data.Bytes description
+                            , Cardano.Data.Constr Natural.one []
+                            , Cardano.Data.Constr Natural.one []
+                            , Cardano.Data.Constr Natural.one []
+                            , Cardano.Data.Constr Natural.one []
+                            ]
+                        , Cardano.Data.Int Integer.zero
+                        , addressToData wallet.changeAddress
+                        ]
+
+                metadata : Cardano.TxOtherInfo
+                metadata =
+                    Cardano.TxMetadata
+                        { tag = Natural.zero
+                        , metadata =
+                            Cardano.Metadatum.Bytes
+                                (Bytes.Comparable.fromText "Start Metadata")
+                        }
+            in
+            [ Cardano.Spend
+                (Cardano.FromWallet
+                    { address = wallet.changeAddress
+                    , guaranteedUtxos = []
+                    , value = threeAda
+                    }
+                )
+            , Cardano.SendToOutput
+                { address = metadataScriptAddress
+                , amount = threeAda
+                , datumOption = Just (Cardano.Utxo.datumValueFromData metadataDatum)
+                , referenceScript = Nothing
+                }
+            ]
+                |> Cardano.finalize (localStateUtxos wallet.utxos)
+                    [ metadata
+                    ]
+
+        _ ->
+            Err (Cardano.FailurePleaseReportToElmCardano "missing address")
 
 
 closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceScriptOutReferenceAndOutput maybePubKeyHash =
@@ -224,6 +335,7 @@ type Msg
     | ConnectButtonClicked { id : String }
     | GotProtocolParameters (Result Http.Error ProtocolParams)
     | GotReferenceUtxos (Result Http.Error (List ReferenceScriptUtxo))
+    | StartMetadataScript
     | CloseMetadata
     | ReceiveCloseMetadata (Result Json.Decode.Error (Result Cardano.TxFinalizationError Cardano.TxFinalized))
 
@@ -236,6 +348,8 @@ type Effect
     | GetRewardAddress Cardano.Cip30.Wallet
     | GetProtocalParameters
     | GetReferenceUtxos
+    | SubmitStartMetadataScriptForSignature Cardano.Transaction.Transaction Wallet
+    | SubmitStartMetadataScriptForSubmission Cardano.Transaction.Transaction Wallet
     | SubmitCloseMetadataTransaction Wallet Cardano.Address.Address
     | SubmitCloseMetadataScriptTransactionForSignature Cardano.Transaction.Transaction Wallet
     | SubmitCloseMetadataScriptForSubmission Cardano.Transaction.Transaction Wallet
@@ -526,6 +640,9 @@ perform effect =
         GetReferenceUtxos ->
             getReferenceScriptUtxos network GotReferenceUtxos
 
+        SubmitStartMetadataScriptForSubmission signedTx wallet ->
+            toWallet (Cardano.Cip30.encodeRequest (Cardano.Cip30.submitTx wallet.wallet signedTx))
+
         SubmitCloseMetadataTransaction wallet metadataScriptAddress ->
             getSpendableUtxos network (Cardano.Address.toBech32 metadataScriptAddress)
                 |> Task.andThen
@@ -573,6 +690,15 @@ perform effect =
                             )
                     )
                 |> Task.attempt ReceiveCloseMetadata
+
+        SubmitStartMetadataScriptForSignature goodTx wallet ->
+            toWallet
+                (Cardano.Cip30.encodeRequest
+                    (Cardano.Cip30.signTx wallet.wallet
+                        { partialSign = False }
+                        goodTx
+                    )
+                )
 
         SubmitCloseMetadataScriptTransactionForSignature goodTx wallet ->
             toWallet
@@ -645,6 +771,7 @@ type Model
         , protocolParameters : ProtocolParams
         , rewardAddresses : List Cardano.Address.Address
         }
+    | StartingMetadataScript Cardano.Transaction.Transaction Wallet
     | ClosingMetadataScript Cardano.Transaction.Transaction Wallet
     | ClosedMetadataScript (Bytes.Comparable.Bytes Cardano.Utxo.TransactionId) Wallet
     | WaitingForInput Wallet
@@ -749,6 +876,38 @@ update msg model =
                     , GetProtocalParameters
                     )
 
+                ( Ok (Cardano.Cip30.ApiResponse _ (Cardano.Cip30.SignedTx vkeywitnesses)), StartingMetadataScript cleanTx wallet ) ->
+                    let
+                        signedTx =
+                            Cardano.Transaction.updateSignatures
+                                (Just << List.append vkeywitnesses << Maybe.withDefault [])
+                                cleanTx
+                    in
+                    ( StartingMetadataScript signedTx wallet
+                    , SubmitStartMetadataScriptForSubmission signedTx wallet
+                    )
+
+                ( Ok (Cardano.Cip30.ApiResponse { walletId } (Cardano.Cip30.SubmittedTx txId)), StartingMetadataScript signedTx wallet ) ->
+                    ( WaitingForInput wallet
+                    , NoEffect
+                    )
+
+                ( Ok (Cardano.Cip30.ApiResponse _ (Cardano.Cip30.SignedTx vkeywitnesses)), ClosingMetadataScript cleanTx wallet ) ->
+                    let
+                        signedTx =
+                            Cardano.Transaction.updateSignatures
+                                (Just << List.append vkeywitnesses << Maybe.withDefault [])
+                                cleanTx
+                    in
+                    ( ClosingMetadataScript signedTx wallet
+                    , SubmitCloseMetadataScriptForSubmission signedTx wallet
+                    )
+
+                ( Ok (Cardano.Cip30.ApiResponse { walletId } (Cardano.Cip30.SubmittedTx txId)), ClosingMetadataScript signedTx wallet ) ->
+                    ( WaitingForInput wallet
+                    , NoEffect
+                    )
+
                 _ ->
                     ( model, NoEffect )
 
@@ -773,6 +932,23 @@ update msg model =
 
         ( ConnectButtonClicked { id }, WalletDiscovered descriptors ) ->
             ( model, EnableWallet id )
+
+        ( StartMetadataScript, WaitingForInput wallet ) ->
+            let
+                tx =
+                    startMetadata
+                        wallet
+                        (Bytes.Comparable.fromText "hello")
+                        (Bytes.Comparable.fromText "hello description")
+            in
+            case tx of
+                Ok validTx ->
+                    ( StartingMetadataScript validTx.tx wallet
+                    , SubmitStartMetadataScriptForSignature validTx.tx wallet
+                    )
+
+                Err err ->
+                    ( model, NoEffect )
 
         ( CloseMetadata, WaitingForInput wallet ) ->
             case metadataScriptResult metadataScriptString of
@@ -851,6 +1027,7 @@ view model =
                 [ Html.div [] [ Html.text <| "Wallet: " ++ (Cardano.Cip30.walletDescriptor wallet).name ]
                 , Html.div [] [ Html.text <| "Address: " ++ (Cardano.Address.toBytes changeAddress |> Bytes.Comparable.toHex) ]
                 , Html.div [] [ Html.text <| "UTxO count: " ++ String.fromInt (List.length utxos) ]
+                , Html.button [ Html.Events.onClick StartMetadataScript ] [ Html.text "start utxo at script" ]
                 , Html.button [ Html.Events.onClick CloseMetadata ] [ Html.text "close utxo at script" ]
                 ]
 

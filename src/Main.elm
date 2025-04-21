@@ -2,7 +2,6 @@ port module Main exposing (..)
 
 import Browser
 import Bytes.Comparable
-import Cardano
 import Cardano.Address
 import Cardano.Cip30
 import Cardano.Data
@@ -11,9 +10,13 @@ import Cardano.Metadatum
 import Cardano.MultiAsset
 import Cardano.Script
 import Cardano.Transaction
+import Cardano.TxIntent
 import Cardano.Utxo
 import Cardano.Value
+import Cardano.Witness
 import Cbor.Decode
+import Cbor.Encode
+import Dict.Any
 import Html
 import Html.Attributes
 import Html.Events
@@ -162,35 +165,49 @@ startMetadata wallet name description =
                         , addressToData wallet.changeAddress
                         ]
 
-                metadata : Cardano.TxOtherInfo
+                metadata : Cardano.TxIntent.TxOtherInfo
                 metadata =
-                    Cardano.TxMetadata
+                    Cardano.TxIntent.TxMetadata
                         { tag = Natural.zero
                         , metadata =
                             Cardano.Metadatum.Bytes
                                 (Bytes.Comparable.fromText "Start Metadata")
                         }
             in
-            [ Cardano.Spend
-                (Cardano.FromWallet
+            [ Cardano.TxIntent.Spend
+                (Cardano.TxIntent.FromWallet
                     { address = wallet.changeAddress
                     , guaranteedUtxos = []
                     , value = threeAda
                     }
                 )
-            , Cardano.SendToOutput
+            , Cardano.TxIntent.SendToOutput
                 { address = metadataScriptAddress
                 , amount = threeAda
                 , datumOption = Just (Cardano.Utxo.datumValueFromData metadataDatum)
                 , referenceScript = Nothing
                 }
             ]
-                |> Cardano.finalize (localStateUtxos wallet.utxos)
-                    [ metadata
-                    ]
+                |> (\x ->
+                        let
+                            _ =
+                                Debug.log "txIntents " x
+                        in
+                        Cardano.TxIntent.finalize (localStateUtxos wallet.utxos)
+                            [ metadata
+                            ]
+                            x
+                   )
 
         _ ->
-            Err (Cardano.FailurePleaseReportToElmCardano "missing address")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "missing address")
+
+
+encodeTuple =
+    Cbor.Encode.tuple <|
+        Cbor.Encode.elems
+            >> Cbor.Encode.elem Cardano.Utxo.encodeOutputReference Tuple.first
+            >> Cbor.Encode.elem Cardano.Utxo.encodeOutput Tuple.second
 
 
 closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceScriptOutReferenceAndOutput maybePubKeyHash =
@@ -206,20 +223,20 @@ closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceSc
                     metadataReferenceScriptOutReferenceAndOutput
                         |> Tuple.second
 
-                metadata : Cardano.TxOtherInfo
+                metadata : Cardano.TxIntent.TxOtherInfo
                 metadata =
-                    Cardano.TxMetadata
+                    Cardano.TxIntent.TxMetadata
                         { tag = Natural.zero
                         , metadata =
                             Cardano.Metadatum.Bytes
                                 (Bytes.Comparable.fromText "Close Metadata")
                         }
 
-                plutusScriptWitness : Cardano.PlutusScriptWitness
+                plutusScriptWitness : Cardano.Witness.PlutusScript
                 plutusScriptWitness =
                     { script =
                         ( Cardano.Script.PlutusV3
-                        , Cardano.WitnessByReference metadataScriptOutReference
+                        , Cardano.Witness.ByReference metadataScriptOutReference
                         )
                     , redeemerData = \_ -> Cardano.Data.Constr Natural.zero []
                     , requiredSigners = [ pubKeyHash ]
@@ -264,46 +281,67 @@ closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceSc
                     metadataOutReferenceAndOutput
 
                 localUtxosWithReferenceScript =
-                    Cardano.updateLocalState metadataScriptOutReference.transactionId
+                    Cardano.TxIntent.updateLocalState metadataScriptOutReference.transactionId
                         referenceTransaction
                         (localStateUtxos wallet.utxos)
 
                 localUtxosWithMetadataScript =
-                    Cardano.updateLocalState metadataOutReference.transactionId
+                    Cardano.TxIntent.updateLocalState metadataOutReference.transactionId
                         metadataTransaction
                         localUtxosWithReferenceScript.updatedState
             in
-            [ Cardano.Spend
-                (Cardano.FromPlutusScript
+            [ Cardano.TxIntent.Spend
+                (Cardano.TxIntent.FromPlutusScript
                     { spentInput = metadataOutReference
                     , datumWitness = Nothing
                     , plutusScriptWitness = plutusScriptWitness
                     }
                 )
-            , Cardano.SendTo wallet.changeAddress
+            , Cardano.TxIntent.SendTo wallet.changeAddress
                 threeAda
             ]
                 |> (\x ->
-                        Cardano.finalize localUtxosWithMetadataScript.updatedState
+                        let
+                            localStateUtxosList =
+                                Dict.Any.toList localUtxosWithMetadataScript.updatedState
+
+                            _ =
+                                Debug.log "localStateUtxos " localUtxosWithMetadataScript.updatedState
+
+                            _ =
+                                Debug.log "localStateUtxosList " localStateUtxosList
+
+                            encodedLocalStateUtxos =
+                                Cbor.Encode.list
+                                    encodeTuple
+                                    localStateUtxosList
+
+                            _ =
+                                Debug.log "encodedLocalStateUtxos  " encodedLocalStateUtxos
+
+                            _ =
+                                Debug.log "txIntents " x
+                        in
+                        Cardano.TxIntent.finalize localUtxosWithMetadataScript.updatedState
                             [ metadata
                             ]
                             x
                    )
 
         Toop.T4 (Err e) _ _ _ ->
-            Err (Cardano.FailurePleaseReportToElmCardano "missing address")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "missing address")
 
         Toop.T4 _ Nothing _ _ ->
-            Err (Cardano.FailurePleaseReportToElmCardano "missing metadata utxo")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "missing metadata utxo")
 
         Toop.T4 _ _ Nothing _ ->
-            Err (Cardano.FailurePleaseReportToElmCardano "missing metadata reference")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "missing metadata reference")
 
         Toop.T4 _ _ _ Nothing ->
-            Err (Cardano.FailurePleaseReportToElmCardano "missing pubKeyHash")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "missing pubKeyHash")
 
         _ ->
-            Err (Cardano.FailurePleaseReportToElmCardano "other issue")
+            Err (Cardano.TxIntent.FailurePleaseReportToElmCardano "other issue")
 
 
 main =
@@ -337,7 +375,7 @@ type Msg
     | GotReferenceUtxos (Result Http.Error (List ReferenceScriptUtxo))
     | StartMetadataScript
     | CloseMetadata
-    | ReceiveCloseMetadata (Result Json.Decode.Error (Result Cardano.TxFinalizationError Cardano.TxFinalized))
+    | ReceiveCloseMetadata (Result Json.Decode.Error (Result Cardano.TxIntent.TxFinalizationError Cardano.TxIntent.TxFinalized))
 
 
 type Effect
@@ -907,6 +945,13 @@ update msg model =
                     ( WaitingForInput wallet
                     , NoEffect
                     )
+
+                ( Ok (Cardano.Cip30.ApiError { code, info }), _ ) ->
+                    let
+                        _ =
+                            Debug.log "Cip30 APi error " info
+                    in
+                    ( model, NoEffect )
 
                 _ ->
                     ( model, NoEffect )

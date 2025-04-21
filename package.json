@@ -10,7 +10,7 @@
     "elm": "^0.19.1-6"
   },
   "devDependencies": {
-    "elm-cardano": "^0.6.0",
+    "elm-cardano": "^0.7.0",
     "uglify-js": "^3.19.3"
   }
 }

@@ -302,6 +302,9 @@ closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceSc
             ]
                 |> (\x ->
                         let
+                            _ =
+                                Debug.log "metadataScriptOutReference " metadataScriptOutReference
+
                             localStateUtxosList =
                                 Dict.Any.toList localUtxosWithMetadataScript.updatedState
 

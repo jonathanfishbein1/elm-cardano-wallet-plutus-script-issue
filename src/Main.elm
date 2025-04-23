@@ -303,7 +303,20 @@ closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceSc
                 |> (\x ->
                         let
                             _ =
-                                Debug.log "metadataScriptOutReference " metadataScriptOutReference
+                                Debug.log "metadataScriptOutReference "
+                                    (Cardano.Utxo.encodeOutputReference metadataScriptOutReference
+                                        |> Cbor.Encode.encode
+                                        |> Bytes.Comparable.fromBytes
+                                        |> Bytes.Comparable.toHex
+                                    )
+
+                            _ =
+                                Debug.log "metadataOutReference "
+                                    (Cardano.Utxo.encodeOutputReference metadataOutReference
+                                        |> Cbor.Encode.encode
+                                        |> Bytes.Comparable.fromBytes
+                                        |> Bytes.Comparable.toHex
+                                    )
 
                             localStateUtxosList =
                                 Dict.Any.toList localUtxosWithMetadataScript.updatedState
@@ -318,10 +331,17 @@ closeMetadata wallet maybeMetadataOutReferenceAndOutput maybeMetadataReferenceSc
                                 Cbor.Encode.list
                                     encodeTuple
                                     localStateUtxosList
+                                    |> Cbor.Encode.encode
+                                    |> Bytes.Comparable.fromBytes
+                                    |> Bytes.Comparable.toHex
 
                             _ =
                                 Debug.log "encodedLocalStateUtxos  " encodedLocalStateUtxos
 
+                            _ = Debug.log "encodedPubKeyHash " (
+                                pubKeyHash
+                                |>Bytes.Comparable.toHex
+                                )
                             _ =
                                 Debug.log "txIntents " x
                         in
